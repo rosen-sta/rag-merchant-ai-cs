@@ -1,0 +1,264 @@
+# 基于 RAG 的电商商家 AI 客服导购系统 MVP
+
+这是一个面向中小网购平台商家的本地可演示 MVP。商家上传商品表格和店铺规则后，系统会把资料保存到 SQLite，并用本地 embedding 模型写入 Chroma 向量库。顾客咨询商品推荐、尺码、材质、发货、退换货、售后等问题时，系统先做 RAG 检索，再调用 DeepSeek 生成简洁客服回复，并展示答案来源。
+
+本项目不做 AI 商品文案生成、不做评论/差评分析、不做支付系统，也不接入真实淘宝、拼多多、抖店等平台。
+
+## 核心功能
+
+- 商家登录：固定测试账号 `admin / 123456`
+- 商品管理：上传 CSV / Excel，解析商品字段，保存到 SQLite，并写入 Chroma
+- 知识库管理：上传 TXT / Markdown 店铺规则，自动切分文本并写入 Chroma
+- AI 客服测试：商家模拟顾客提问，查看回答、`mode`、命中来源和来源摘要
+- 顾客端预览：模拟真实网购平台客服聊天窗口，不展示调试信息
+- RAG 约束：回答基于上传资料；无资料时提示联系人工客服；来源去重，最多展示 3 条
+- 推荐约束：商品推荐最多 2 个；规则问题优先规则，商品问题优先商品
+
+## 技术栈
+
+- 前端：静态 React，由 FastAPI 托管，不需要单独 npm 启动
+- 后端：FastAPI
+- 数据库：SQLite
+- 向量数据库：Chroma
+- 聊天模型：DeepSeek API，使用 OpenAI 兼容 chat/completions 调用方式
+- 向量模型：本地 `sentence-transformers`，默认 `BAAI/bge-small-zh-v1.5`
+- 文件解析：`pandas`、`openpyxl`
+
+## 项目结构
+
+```text
+backend/app/
+  main.py          FastAPI 路由入口和静态页面托管
+  config.py        DeepSeek、本地 embedding、数据库路径配置
+  database.py      SQLite 初始化、商品和知识文件读写
+  file_parser.py   CSV/Excel/TXT/Markdown 解析与文本切分
+  rag.py           本地 embedding、Chroma 写入、检索、来源去重
+  chat_service.py  RAG 上下文组装与 DeepSeek 回答生成
+  schemas.py       请求参数模型
+frontend/
+  index.html       前端入口
+  app.js           页面和交互逻辑
+  styles.css       UI 样式
+  vendor/          本地 React 运行时
+samples/
+  products_sample.csv       示例商品数据
+  store_rules_sample.txt    示例店铺规则
+requirements.txt            Python 依赖
+.env.example                环境变量模板
+```
+
+## 环境变量配置
+
+复制模板：
+
+```bash
+cp .env.example .env
+```
+
+编辑 `.env`：
+
+```env
+DEEPSEEK_API_KEY=你的 DeepSeek API Key
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+CHAT_MODEL=deepseek-v4-flash
+EMBEDDING_PROVIDER=local
+EMBEDDING_MODEL=BAAI/bge-small-zh-v1.5
+CHROMA_DB_PATH=./data/chroma
+SQLITE_DB_PATH=./data/app.db
+```
+
+说明：
+
+- `DEEPSEEK_API_KEY`：必填，DeepSeek 控制台获取。
+- `DEEPSEEK_BASE_URL`：固定使用 `https://api.deepseek.com`。
+- `CHAT_MODEL`：默认 `deepseek-v4-flash`；如果账号暂不支持，也可以改成 `deepseek-chat`。
+- `EMBEDDING_PROVIDER`：保持 `local`，本项目不调用远程 embedding API。
+- `EMBEDDING_MODEL`：默认中文向量模型 `BAAI/bge-small-zh-v1.5`。
+- `CHROMA_DB_PATH` / `SQLITE_DB_PATH`：本地演示数据存储路径。
+
+## 本地启动步骤
+
+进入项目目录：
+
+```bash
+cd /Users/mac/Documents/Codex/2026-06-04/rag-ai-mvp-1-ai-2/outputs/rag-merchant-ai-cs
+```
+
+创建环境并安装依赖：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+启动后端和前端页面：
+
+```bash
+uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+前端不需要单独启动。浏览器访问：
+
+```text
+http://127.0.0.1:8000
+```
+
+## 测试账号
+
+```text
+账号：admin
+密码：123456
+```
+
+## 示例数据说明
+
+`samples/products_sample.csv` 包含 4 个演示商品：
+
+- 轻薄防晒衬衫
+- 通勤托特包
+- 男士速干运动 T 恤
+- 儿童纯棉短裤
+
+字段包含：商品名称、类目、价格、尺码、材质、适用人群、商品卖点、库存、商品链接。
+
+`samples/store_rules_sample.txt` 包含店铺规则：
+
+- 发货规则
+- 运费规则
+- 退换货规则
+- 尺码建议
+- 质量问题售后
+- 常见问题 FAQ
+
+## 从零验证流程
+
+1. 按上面的步骤创建 `.env`、安装依赖并启动服务。
+2. 打开 `http://127.0.0.1:8000`。
+3. 使用 `admin / 123456` 登录。
+4. 进入“商品管理”，上传 `samples/products_sample.csv`。
+5. 确认商品列表出现 4 条商品。
+6. 进入“知识库管理”，上传 `samples/store_rules_sample.txt`。
+7. 确认知识文件列表出现该文件，并显示 chunk 数。
+8. 进入“AI 客服测试”，输入问题并查看回答、`mode`、来源和摘要。
+9. 进入“顾客端预览”，用聊天窗口模拟真实顾客咨询。
+
+推荐测试问题：
+
+- 多久发货？
+- 可以退货吗？
+- 有适合学生党的商品吗？
+- 质量问题怎么处理？
+- 有 200 元以内的包推荐吗？
+
+## DeepSeek 调用验证方法
+
+先检查健康接口：
+
+```bash
+curl http://127.0.0.1:8000/api/health
+```
+
+确认返回中：
+
+```json
+{
+  "deepseek_chat_configured": true,
+  "deepseek_base_url": "https://api.deepseek.com"
+}
+```
+
+再调用聊天接口：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"question":"多久发货？","top_k":5}'
+```
+
+如果返回：
+
+```json
+"mode": "deepseek_openai_compatible"
+```
+
+说明 DeepSeek 已成功调用。
+
+其他 mode 含义：
+
+- `local_fallback_no_deepseek_key`：没有配置 `DEEPSEEK_API_KEY`
+- `local_fallback_after_deepseek_error`：DeepSeek 调用失败，后端临时用检索摘要兜底
+- `no_context`：知识库没有检索到相关内容
+
+## 常见问题处理
+
+### 首次上传商品或知识文件很慢
+
+首次使用本地 embedding 时会下载 `BAAI/bge-small-zh-v1.5`，可能需要几分钟。下载完成后会缓存到本机，后续会快很多。
+
+### `ModuleNotFoundError: No module named 'fastapi'`
+
+依赖没有安装，执行：
+
+```bash
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### `ModuleNotFoundError: No module named 'sentence_transformers'`
+
+本地 embedding 依赖没有安装，执行：
+
+```bash
+pip install -r requirements.txt
+```
+
+### 上传 Excel 失败
+
+Excel 解析依赖 `openpyxl`。确认文件格式是 `.xlsx` 或 `.xls`，并重新安装依赖：
+
+```bash
+pip install -r requirements.txt
+```
+
+### DeepSeek 调用失败
+
+检查 `.env`：
+
+- `DEEPSEEK_API_KEY` 是否填写
+- `DEEPSEEK_BASE_URL` 是否为 `https://api.deepseek.com`
+- `CHAT_MODEL` 是否为账号支持的模型，例如 `deepseek-v4-flash` 或 `deepseek-chat`
+
+然后重启后端。
+
+### Chroma 维度不一致
+
+如果修改过 `EMBEDDING_MODEL`，旧向量可能不能复用。删除运行数据后重新上传：
+
+```bash
+rm -rf data/chroma data/app.db
+uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+## 项目演示流程
+
+适合录屏或答辩时按顺序展示：
+
+1. 打开首页，说明这是“基于 RAG 的电商商家 AI 客服导购系统”。
+2. 使用 `admin / 123456` 登录商家后台。
+3. 进入“商品管理”，上传 `samples/products_sample.csv`，展示商品列表。
+4. 说明商品资料会保存到 SQLite，并同步写入 Chroma 向量库。
+5. 进入“知识库管理”，上传 `samples/store_rules_sample.txt`，展示知识文件列表。
+6. 说明规则文本会自动切分 chunk，并使用本地 embedding 写入 Chroma。
+7. 进入“AI 客服测试”，依次提问：
+   - `多久发货？`
+   - `可以退货吗？`
+   - `有适合学生党的商品吗？`
+   - `质量问题怎么处理？`
+   - `有 200 元以内的包推荐吗？`
+8. 展示每个回答下方的来源，说明回答不是凭空生成，而是基于命中的商品或规则资料。
+9. 指出测试页的 `mode=deepseek_openai_compatible`，证明 DeepSeek 调用成功。
+10. 进入“顾客端预览”，展示真实客服聊天窗口体验。
+11. 用顾客端再问 `有 200 元以内的包推荐吗？`，展示自然客服回复。
+12. 总结系统边界：当前是本地 MVP，不做支付、不接真实电商平台、不做评论分析。
+

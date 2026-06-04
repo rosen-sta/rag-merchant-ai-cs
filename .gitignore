@@ -1,0 +1,29 @@
+# environment
+.env
+.venv/
+venv/
+
+# runtime data
+data/
+*.db
+*.sqlite
+*.sqlite3
+chroma/
+chroma_db/
+
+# python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# frontend
+node_modules/
+dist/
+build/
+.next/
+
+# system files
+.DS_Store
+
+# logs
+*.log
