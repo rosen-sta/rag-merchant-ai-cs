@@ -6,6 +6,8 @@ const NAV_ITEMS = [
   { path: "/products", label: "商品管理" },
   { path: "/knowledge", label: "知识库管理" },
   { path: "/test", label: "AI 客服测试" },
+  { path: "/chat-records", label: "聊天记录" },
+  { path: "/missed", label: "未命中问题" },
   { path: "/customer", label: "顾客端预览" },
 ];
 
@@ -15,6 +17,7 @@ const SAMPLE_QUESTIONS = [
   "可以退货吗？",
   "这款适合学生党吗？",
   "有 200 元以内的包推荐吗？",
+  "防晒衬衫和通勤托特包有什么区别？",
   "质量问题怎么处理？",
 ];
 
@@ -25,6 +28,19 @@ function routeFromHash() {
 
 function navigate(path) {
   window.location.hash = path;
+}
+
+function makeSessionId(prefix) {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(16).slice(2, 8)}`;
+}
+
+function getCustomerSessionId() {
+  const key = "customer-session-id";
+  const existing = localStorage.getItem(key);
+  if (existing) return existing;
+  const created = makeSessionId("customer");
+  localStorage.setItem(key, created);
+  return created;
 }
 
 async function apiRequest(path, options = {}) {
@@ -189,6 +205,10 @@ function PageRouter({ route }) {
       return h(KnowledgePage);
     case "/test":
       return h(ChatPage, { customerMode: false });
+    case "/chat-records":
+      return h(ChatRecordsPage);
+    case "/missed":
+      return h(MissedQuestionsPage);
     case "/customer":
       return h(CustomerPage);
     case "/dashboard":
@@ -202,6 +222,8 @@ function Dashboard() {
     { label: "商品管理", path: "/products", desc: "导入商品 Excel / CSV，并写入向量知识库。" },
     { label: "知识库管理", path: "/knowledge", desc: "上传发货、退换货、售后、FAQ 等规则文件。" },
     { label: "AI 客服测试", path: "/test", desc: "模拟顾客问题，查看回答和命中来源。" },
+    { label: "聊天记录", path: "/chat-records", desc: "查看顾客咨询、测试问答、mode 和人工处理状态。" },
+    { label: "未命中问题", path: "/missed", desc: "收集知识库无法回答的问题，便于补充 FAQ。" },
     { label: "顾客端预览", path: "/customer", desc: "用聊天窗口体验真实咨询流程。" },
   ];
   return h(
@@ -401,6 +423,219 @@ function KnowledgePage() {
   );
 }
 
+function ChatRecordsPage() {
+  const filters = [
+    { key: "all", label: "全部" },
+    { key: "human", label: "需要人工处理" },
+    { key: "deepseek", label: "DeepSeek 成功" },
+    { key: "fallback", label: "fallback" },
+  ];
+  const [filter, setFilter] = useState("all");
+  const [items, setItems] = useState([]);
+  const [expandedId, setExpandedId] = useState(null);
+  const [status, setStatus] = useState("");
+
+  async function refresh(nextFilter = filter) {
+    const data = await apiRequest(`/api/chat/records?filter=${encodeURIComponent(nextFilter)}`);
+    setItems(data.items || []);
+  }
+
+  useEffect(() => {
+    refresh().catch((err) => setStatus(err.message));
+  }, [filter]);
+
+  function changeFilter(nextFilter) {
+    setFilter(nextFilter);
+    setExpandedId(null);
+  }
+
+  return h(
+    "section",
+    { className: "content-stack" },
+    h(
+      "div",
+      { className: "filter-bar" },
+      filters.map((item) =>
+        h(
+          "button",
+          {
+            key: item.key,
+            className: filter === item.key ? "chip-btn active" : "chip-btn",
+            onClick: () => changeFilter(item.key),
+          },
+          item.label
+        )
+      )
+    ),
+    status && h("div", { className: "notice" }, status),
+    h(
+      "section",
+      { className: "table-section" },
+      h("div", { className: "section-head" }, h("h3", null, "聊天记录"), h("span", null, `${items.length} 条`)),
+      h(
+        "div",
+        { className: "table-wrap" },
+        h(
+          "table",
+          null,
+          h(
+            "thead",
+            null,
+            h(
+              "tr",
+              null,
+              ["用户问题", "AI 回答摘要", "人工处理", "mode", "创建时间", "操作"].map((title) => h("th", { key: title }, title))
+            )
+          ),
+          h(
+            "tbody",
+            null,
+            items.length === 0
+              ? h("tr", null, h("td", { colSpan: 6, className: "empty-cell" }, "暂无聊天记录"))
+              : items.map((item) =>
+                  h(
+                    React.Fragment,
+                    { key: item.id },
+                    h(
+                      "tr",
+                      null,
+                      h("td", { className: "wide-cell" }, item.question),
+                      h("td", { className: "wide-cell" }, summarizeText(item.answer, 88)),
+                      h("td", null, item.needs_human ? h("span", { className: "status-badge danger" }, "需要") : h("span", { className: "status-badge" }, "否")),
+                      h("td", null, h("code", { className: "mode-code" }, item.mode)),
+                      h("td", null, formatTime(item.created_at)),
+                      h(
+                        "td",
+                        null,
+                        h(
+                          "button",
+                          { className: "secondary-btn small-btn", onClick: () => setExpandedId(expandedId === item.id ? null : item.id) },
+                          expandedId === item.id ? "收起" : "查看详情"
+                        )
+                      )
+                    ),
+                    expandedId === item.id &&
+                      h(
+                        "tr",
+                        null,
+                        h(
+                          "td",
+                          { colSpan: 6, className: "detail-cell" },
+                          h("strong", null, "完整回答"),
+                          h("p", null, item.answer),
+                          h("strong", null, "来源"),
+                          h(RecordSourceList, { sourcesJson: item.sources_json }),
+                          h("div", { className: "meta-line" }, `session_id: ${item.session_id} · user_type: ${item.user_type}`)
+                        )
+                      )
+                  )
+                )
+          )
+        )
+      )
+    )
+  );
+}
+
+function RecordSourceList({ sourcesJson }) {
+  let sources = [];
+  try {
+    sources = JSON.parse(sourcesJson || "[]");
+  } catch (_) {
+    sources = [];
+  }
+  if (sources.length === 0) {
+    return h("p", { className: "muted-line" }, "无来源");
+  }
+  return h(
+    "div",
+    { className: "record-sources" },
+    sources.slice(0, 3).map((source, index) => {
+      const metadata = source.metadata || {};
+      return h(
+        "div",
+        { key: index, className: "record-source-item" },
+        h("span", null, metadata.source_type === "product" ? "商品" : "规则"),
+        h("strong", null, metadata.title || "未知来源"),
+        h("p", null, source.summary || "")
+      );
+    })
+  );
+}
+
+function MissedQuestionsPage() {
+  const [items, setItems] = useState([]);
+  const [status, setStatus] = useState("");
+
+  async function refresh() {
+    const data = await apiRequest("/api/missed-questions");
+    setItems(data.items || []);
+  }
+
+  useEffect(() => {
+    refresh().catch((err) => setStatus(err.message));
+  }, []);
+
+  async function resolveItem(id) {
+    setStatus("");
+    try {
+      await apiRequest(`/api/missed-questions/${id}/resolve`, { method: "PATCH" });
+      await refresh();
+    } catch (err) {
+      setStatus(err.message);
+    }
+  }
+
+  return h(
+    "section",
+    { className: "content-stack" },
+    status && h("div", { className: "notice" }, status),
+    h(
+      "section",
+      { className: "table-section" },
+      h("div", { className: "section-head" }, h("h3", null, "未命中问题"), h("span", null, `${items.length} 条`)),
+      h(
+        "div",
+        { className: "table-wrap" },
+        h(
+          "table",
+          null,
+          h("thead", null, h("tr", null, ["问题", "原因", "状态", "创建时间", "操作"].map((title) => h("th", { key: title }, title)))),
+          h(
+            "tbody",
+            null,
+            items.length === 0
+              ? h("tr", null, h("td", { colSpan: 5, className: "empty-cell" }, "暂无未命中问题"))
+              : items.map((item) =>
+                  h(
+                    "tr",
+                    { key: item.id },
+                    h("td", { className: "wide-cell" }, item.question),
+                    h("td", null, item.reason),
+                    h("td", null, h("span", { className: item.status === "pending" ? "status-badge warning" : "status-badge success" }, item.status === "pending" ? "待处理" : "已处理")),
+                    h("td", null, formatTime(item.created_at)),
+                    h(
+                      "td",
+                      null,
+                      item.status === "pending"
+                        ? h("button", { className: "secondary-btn small-btn", onClick: () => resolveItem(item.id) }, "标记已处理")
+                        : "-"
+                    )
+                  )
+                )
+          )
+        )
+      )
+    )
+  );
+}
+
+function summarizeText(text, limit) {
+  const compact = String(text || "").replace(/\s+/g, " ").trim();
+  if (compact.length <= limit) return compact || "-";
+  return compact.slice(0, limit - 3) + "...";
+}
+
 function ChatPage({ customerMode }) {
   return h(
     "section",
@@ -436,6 +671,7 @@ function CustomerPage() {
 }
 
 function ChatConsole({ customerMode }) {
+  const sessionId = useMemo(() => (customerMode ? getCustomerSessionId() : makeSessionId("merchant-test")), [customerMode]);
   const [messages, setMessages] = useState([
     {
       role: "assistant",
@@ -469,7 +705,12 @@ function ChatConsole({ customerMode }) {
       const data = await apiRequest("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: text, top_k: 5 }),
+        body: JSON.stringify({
+          question: text,
+          top_k: 5,
+          session_id: sessionId,
+          user_type: customerMode ? "customer" : "merchant_test",
+        }),
       });
       setMessages((current) => [...current, { role: "assistant", ...data }]);
     } catch (err) {
@@ -505,7 +746,9 @@ function ChatConsole({ customerMode }) {
                   null,
                   !customerMode && message.question && h("div", { className: "question-line" }, `用户问题：${message.question}`),
                   !customerMode && message.mode && h("div", { className: "mode-line" }, `mode: ${message.mode}`),
+                  message.needs_human && h("div", { className: customerMode ? "handoff-banner customer" : "handoff-banner" }, "已转人工处理"),
                   h("p", null, message.answer),
+                  h(ProductCardList, { cards: message.product_cards || [], customerMode }),
                   !customerMode && h(SourceList, { sources: message.sources || [] })
                 )
           ),
@@ -525,7 +768,7 @@ function ChatConsole({ customerMode }) {
       h(
         "div",
         { className: "customer-quick-bar" },
-        ["多久发货？", "可以退货吗？", "有适合学生党的商品吗？"].map((question) =>
+        ["多久发货？", "可以退货吗？", "有 200 元以内的包推荐吗？", "我要找人工客服"].map((question) =>
           h("button", { key: question, type: "button", onClick: () => ask(question) }, question)
         )
       ),
@@ -540,6 +783,39 @@ function ChatConsole({ customerMode }) {
       h("button", { className: "primary-btn", disabled: loading }, "发送")
     )
   );
+}
+
+function ProductCardList({ cards, customerMode }) {
+  if (!cards || cards.length === 0) return null;
+  return h(
+    "div",
+    { className: customerMode ? "product-cards customer" : "product-cards" },
+    cards.slice(0, 3).map((card) =>
+      h(
+        "article",
+        { key: card.id || card.name, className: "product-card" },
+        h(
+          "div",
+          { className: "product-card-head" },
+          h("strong", null, card.name || "未命名商品"),
+          h("span", { className: "product-price" }, formatProductPrice(card.price))
+        ),
+        h("div", { className: "product-meta" }, card.category || "未标注类目"),
+        card.target_user && h("div", { className: "product-audience" }, `适合：${card.target_user}`),
+        card.selling_points && h("p", { className: "product-desc" }, summarizeText(card.selling_points, 54)),
+        h("div", { className: "product-stock" }, `库存：${card.stock || "-"}`),
+        card.link
+          ? h("a", { className: "product-action", href: card.link, target: "_blank", rel: "noreferrer" }, "查看商品")
+          : h("button", { className: "product-action disabled", disabled: true }, "暂无链接")
+      )
+    )
+  );
+}
+
+function formatProductPrice(value) {
+  if (value === undefined || value === null || value === "") return "价格待确认";
+  const text = String(value);
+  return text.includes("¥") || text.includes("元") ? text : `¥${text}`;
 }
 
 function SourceList({ sources }) {

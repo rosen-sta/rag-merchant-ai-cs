@@ -1,6 +1,7 @@
 from pathlib import Path
+from typing import Optional
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -9,11 +10,18 @@ from .chat_service import answer_question
 from .config import PROJECT_ROOT, get_settings
 from .database import (
     init_db,
+    get_product,
     insert_knowledge_file,
     insert_products,
+    list_chat_history,
+    list_chat_records,
+    list_chat_sessions,
     list_knowledge_files,
+    list_missed_questions,
     list_products,
+    resolve_missed_question,
     save_upload,
+    search_products,
 )
 from .file_parser import chunk_text, parse_product_file, parse_text_file, product_to_document
 from .rag import build_knowledge_documents, build_product_documents, get_collection, upsert_documents
@@ -92,6 +100,31 @@ def products():
     return {"items": list_products()}
 
 
+@app.get("/api/products/search")
+def product_search(
+    keyword: str = "",
+    category: str = "",
+    max_price: Optional[float] = Query(default=None, ge=0),
+    target_user: str = "",
+):
+    return {
+        "items": search_products(
+            keyword=keyword,
+            category=category,
+            max_price=max_price,
+            target_user=target_user,
+        )
+    }
+
+
+@app.get("/api/products/{product_id}")
+def product_detail(product_id: int):
+    item = get_product(product_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="未找到该商品")
+    return item
+
+
 @app.post("/api/knowledge/upload")
 async def upload_knowledge(file: UploadFile = File(...)):
     content = await file.read()
@@ -138,7 +171,46 @@ def knowledge():
 
 @app.post("/api/chat")
 def chat(payload: ChatRequest):
-    return answer_question(payload.question, top_k=payload.top_k or 5)
+    return answer_question(
+        payload.question,
+        top_k=payload.top_k or 5,
+        session_id=payload.session_id or "",
+        user_type=payload.user_type,
+    )
+
+
+@app.get("/api/chat/sessions")
+def chat_sessions():
+    return {"items": list_chat_sessions()}
+
+
+@app.get("/api/chat/history")
+def chat_history(session_id: str):
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id 不能为空")
+    return {"items": list_chat_history(session_id)}
+
+
+@app.get("/api/chat/records")
+def chat_records(filter: str = "all"):
+    if filter not in {"all", "human", "deepseek", "fallback"}:
+        raise HTTPException(status_code=400, detail="filter 仅支持 all、human、deepseek、fallback")
+    return {"items": list_chat_records(filter)}
+
+
+@app.get("/api/missed-questions")
+def missed_questions(status: str = ""):
+    if status and status not in {"pending", "resolved"}:
+        raise HTTPException(status_code=400, detail="status 仅支持 pending 或 resolved")
+    return {"items": list_missed_questions(status or None)}
+
+
+@app.patch("/api/missed-questions/{missed_id}/resolve")
+def resolve_missed(missed_id: int):
+    item = resolve_missed_question(missed_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="未找到该未命中问题")
+    return item
 
 
 @app.exception_handler(Exception)

@@ -50,6 +50,7 @@ PRODUCT_KEYWORDS = {
     "库存",
     "元",
 }
+OVERSEAS_DELIVERY_TERMS = ["海外配送", "海外发货", "国外配送", "国外发货", "国际配送", "国际发货"]
 
 
 def _safe_collection_part(value: str) -> str:
@@ -177,6 +178,13 @@ def _apply_intent_policy(question: str, sources: Sequence[Dict], limit: int) -> 
     return deduped[:limit]
 
 
+def _is_unanswered_overseas_delivery(question: str, sources: Sequence[Dict]) -> bool:
+    if not any(term in question for term in OVERSEAS_DELIVERY_TERMS):
+        return False
+    joined = "\n".join(source.get("content", "") for source in sources)
+    return not any(term in joined for term in OVERSEAS_DELIVERY_TERMS)
+
+
 def search(question: str, top_k: int = 5) -> List[Dict]:
     collection = get_collection()
     try:
@@ -224,6 +232,8 @@ def search(question: str, top_k: int = 5) -> List[Dict]:
         best_score = ranked[0]["score"]
         minimum_score = max(0.3, best_score * 0.35)
         ranked = [item for item in ranked if item["score"] >= minimum_score]
+    if _is_unanswered_overseas_delivery(question, ranked):
+        return []
     return _apply_intent_policy(question, ranked, source_limit)
 
 
