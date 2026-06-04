@@ -4,8 +4,10 @@ const { useEffect, useMemo, useRef, useState } = React;
 const NAV_ITEMS = [
   { path: "/dashboard", label: "后台首页" },
   { path: "/products", label: "商品管理" },
+  { path: "/orders", label: "订单管理" },
   { path: "/knowledge", label: "知识库管理" },
   { path: "/test", label: "AI 客服测试" },
+  { path: "/aftersales", label: "售后工单" },
   { path: "/chat-records", label: "聊天记录" },
   { path: "/missed", label: "未命中问题" },
   { path: "/customer", label: "顾客端预览" },
@@ -18,6 +20,8 @@ const SAMPLE_QUESTIONS = [
   "这款适合学生党吗？",
   "有 200 元以内的包推荐吗？",
   "防晒衬衫和通勤托特包有什么区别？",
+  "订单 10001 发货了吗？",
+  "订单 10003 商品有质量问题，我要退货",
   "质量问题怎么处理？",
 ];
 
@@ -201,10 +205,14 @@ function PageRouter({ route }) {
   switch (route) {
     case "/products":
       return h(ProductPage);
+    case "/orders":
+      return h(OrdersPage);
     case "/knowledge":
       return h(KnowledgePage);
     case "/test":
       return h(ChatPage, { customerMode: false });
+    case "/aftersales":
+      return h(AftersalesPage);
     case "/chat-records":
       return h(ChatRecordsPage);
     case "/missed":
@@ -220,8 +228,10 @@ function PageRouter({ route }) {
 function Dashboard() {
   const entries = [
     { label: "商品管理", path: "/products", desc: "导入商品 Excel / CSV，并写入向量知识库。" },
+    { label: "订单管理", path: "/orders", desc: "查看本地模拟订单、物流状态和售后状态。" },
     { label: "知识库管理", path: "/knowledge", desc: "上传发货、退换货、售后、FAQ 等规则文件。" },
     { label: "AI 客服测试", path: "/test", desc: "模拟顾客问题，查看回答和命中来源。" },
+    { label: "售后工单", path: "/aftersales", desc: "查看 AI 自动创建的退换货、退款、投诉工单。" },
     { label: "聊天记录", path: "/chat-records", desc: "查看顾客咨询、测试问答、mode 和人工处理状态。" },
     { label: "未命中问题", path: "/missed", desc: "收集知识库无法回答的问题，便于补充 FAQ。" },
     { label: "顾客端预览", path: "/customer", desc: "用聊天窗口体验真实咨询流程。" },
@@ -346,6 +356,205 @@ function ProductTable({ items }) {
                   )
                 )
               )
+        )
+      )
+    )
+  );
+}
+
+function OrdersPage() {
+  const [items, setItems] = useState([]);
+  const [keyword, setKeyword] = useState("");
+  const [expandedNo, setExpandedNo] = useState(null);
+  const [status, setStatus] = useState("");
+
+  async function refresh(nextKeyword = keyword) {
+    const path = nextKeyword.trim() ? `/api/orders/search?keyword=${encodeURIComponent(nextKeyword.trim())}` : "/api/orders";
+    const data = await apiRequest(path);
+    setItems(data.items || []);
+  }
+
+  useEffect(() => {
+    refresh().catch((err) => setStatus(err.message));
+  }, []);
+
+  async function search(event) {
+    event.preventDefault();
+    setStatus("");
+    setExpandedNo(null);
+    try {
+      await refresh(keyword);
+    } catch (err) {
+      setStatus(err.message);
+    }
+  }
+
+  return h(
+    "section",
+    { className: "content-stack" },
+    h(
+      "form",
+      { className: "toolbar-form", onSubmit: search },
+      h("input", {
+        value: keyword,
+        placeholder: "按订单号、顾客昵称、商品、快递单号搜索",
+        onChange: (event) => setKeyword(event.target.value),
+      }),
+      h("button", { className: "primary-btn" }, "搜索"),
+      h("button", { type: "button", className: "secondary-btn", onClick: () => { setKeyword(""); refresh(""); } }, "重置")
+    ),
+    status && h("div", { className: "notice" }, status),
+    h(
+      "section",
+      { className: "table-section" },
+      h("div", { className: "section-head" }, h("h3", null, "订单列表"), h("span", null, `${items.length} 条`)),
+      h(
+        "div",
+        { className: "table-wrap" },
+        h(
+          "table",
+          null,
+          h(
+            "thead",
+            null,
+            h("tr", null, ["订单号", "顾客昵称", "商品名称", "订单状态", "物流状态", "快递单号", "售后状态", "下单时间", "操作"].map((title) => h("th", { key: title }, title)))
+          ),
+          h(
+            "tbody",
+            null,
+            items.length === 0
+              ? h("tr", null, h("td", { colSpan: 9, className: "empty-cell" }, "暂无订单"))
+              : items.map((item) =>
+                  h(
+                    React.Fragment,
+                    { key: item.order_no },
+                    h(
+                      "tr",
+                      null,
+                      h("td", null, item.order_no),
+                      h("td", null, item.customer_name || "-"),
+                      h("td", { className: "wide-cell" }, item.product_name || "-"),
+                      h("td", null, h("span", { className: "status-badge" }, item.order_status || "-")),
+                      h("td", null, h("span", { className: shippingBadgeClass(item.shipping_status) }, item.shipping_status || "-")),
+                      h("td", null, item.tracking_no || "-"),
+                      h("td", null, item.aftersale_status || "-"),
+                      h("td", null, formatTime(item.created_at)),
+                      h(
+                        "td",
+                        null,
+                        h("button", { className: "secondary-btn small-btn", onClick: () => setExpandedNo(expandedNo === item.order_no ? null : item.order_no) }, expandedNo === item.order_no ? "收起" : "查看详情")
+                      )
+                    ),
+                    expandedNo === item.order_no &&
+                      h(
+                        "tr",
+                        null,
+                        h(
+                          "td",
+                          { colSpan: 9, className: "detail-cell" },
+                          h(OrderInfoCard, { order: item }),
+                          h("div", { className: "meta-line" }, `发货时间：${formatTime(item.shipped_at)} · 支付金额：${formatMoney(item.paid_amount)}`)
+                        )
+                      )
+                  )
+                )
+          )
+        )
+      )
+    )
+  );
+}
+
+function AftersalesPage() {
+  const filters = [
+    { key: "", label: "全部" },
+    { key: "pending", label: "待处理" },
+    { key: "processing", label: "处理中" },
+    { key: "resolved", label: "已处理" },
+    { key: "rejected", label: "已拒绝" },
+  ];
+  const statusOptions = ["pending", "processing", "resolved", "rejected"];
+  const [filter, setFilter] = useState("");
+  const [items, setItems] = useState([]);
+  const [message, setMessage] = useState("");
+
+  async function refresh(nextFilter = filter) {
+    const path = nextFilter ? `/api/aftersales?status=${encodeURIComponent(nextFilter)}` : "/api/aftersales";
+    const data = await apiRequest(path);
+    setItems(data.items || []);
+  }
+
+  useEffect(() => {
+    refresh().catch((err) => setMessage(err.message));
+  }, [filter]);
+
+  async function updateStatus(id, nextStatus) {
+    setMessage("");
+    try {
+      await apiRequest(`/api/aftersales/${id}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      await refresh();
+    } catch (err) {
+      setMessage(err.message);
+    }
+  }
+
+  return h(
+    "section",
+    { className: "content-stack" },
+    h(
+      "div",
+      { className: "filter-bar" },
+      filters.map((item) =>
+        h("button", { key: item.key || "all", className: filter === item.key ? "chip-btn active" : "chip-btn", onClick: () => setFilter(item.key) }, item.label)
+      )
+    ),
+    message && h("div", { className: "notice" }, message),
+    h(
+      "section",
+      { className: "table-section" },
+      h("div", { className: "section-head" }, h("h3", null, "售后工单"), h("span", null, `${items.length} 条`)),
+      h(
+        "div",
+        { className: "table-wrap" },
+        h(
+          "table",
+          null,
+          h("thead", null, h("tr", null, ["工单编号", "订单号", "问题类型", "问题描述", "AI 建议", "状态", "人工", "创建时间", "修改状态"].map((title) => h("th", { key: title }, title)))),
+          h(
+            "tbody",
+            null,
+            items.length === 0
+              ? h("tr", null, h("td", { colSpan: 9, className: "empty-cell" }, "暂无售后工单"))
+              : items.map((item) =>
+                  h(
+                    "tr",
+                    { key: item.id },
+                    h("td", null, item.ticket_no),
+                    h("td", null, item.order_no || "-"),
+                    h("td", null, item.issue_type),
+                    h("td", { className: "wide-cell" }, summarizeText(item.issue_description, 72)),
+                    h("td", { className: "wide-cell" }, summarizeText(item.ai_suggestion, 84)),
+                    h("td", null, h("span", { className: ticketStatusClass(item.status) }, statusLabel(item.status))),
+                    h("td", null, item.needs_human ? h("span", { className: "status-badge danger" }, "需要") : h("span", { className: "status-badge" }, "否")),
+                    h("td", null, formatTime(item.created_at)),
+                    h(
+                      "td",
+                      null,
+                      h(
+                        "div",
+                        { className: "inline-actions" },
+                        statusOptions.map((status) =>
+                          h("button", { key: status, className: item.status === status ? "small-btn secondary-btn active-status" : "small-btn secondary-btn", onClick: () => updateStatus(item.id, status) }, statusLabel(status))
+                        )
+                      )
+                    )
+                  )
+                )
+          )
         )
       )
     )
@@ -525,6 +734,7 @@ function ChatRecordsPage() {
                           h("p", null, item.answer),
                           h("strong", null, "来源"),
                           h(RecordSourceList, { sourcesJson: item.sources_json }),
+                          h(RecordExtraCards, { orderJson: item.order_card_json, ticketJson: item.aftersale_ticket_json }),
                           h("div", { className: "meta-line" }, `session_id: ${item.session_id} · user_type: ${item.user_type}`)
                         )
                       )
@@ -560,6 +770,28 @@ function RecordSourceList({ sourcesJson }) {
         h("p", null, source.summary || "")
       );
     })
+  );
+}
+
+function RecordExtraCards({ orderJson, ticketJson }) {
+  let order = null;
+  let ticket = null;
+  try {
+    order = orderJson ? JSON.parse(orderJson) : null;
+  } catch (_) {
+    order = null;
+  }
+  try {
+    ticket = ticketJson ? JSON.parse(ticketJson) : null;
+  } catch (_) {
+    ticket = null;
+  }
+  if (!order && !ticket) return null;
+  return h(
+    "div",
+    { className: "record-extra-cards" },
+    order && h(OrderInfoCard, { order }),
+    ticket && h(AftersaleTicketInfoCard, { ticket })
   );
 }
 
@@ -634,6 +866,75 @@ function summarizeText(text, limit) {
   const compact = String(text || "").replace(/\s+/g, " ").trim();
   if (compact.length <= limit) return compact || "-";
   return compact.slice(0, limit - 3) + "...";
+}
+
+function formatMoney(value) {
+  if (value === undefined || value === null || value === "") return "-";
+  const text = String(value);
+  return text.includes("¥") || text.includes("元") ? text : `¥${text}`;
+}
+
+function statusLabel(status) {
+  const labels = {
+    pending: "待处理",
+    processing: "处理中",
+    resolved: "已处理",
+    rejected: "已拒绝",
+  };
+  return labels[status] || status || "-";
+}
+
+function ticketStatusClass(status) {
+  if (status === "resolved") return "status-badge success";
+  if (status === "rejected") return "status-badge danger";
+  if (status === "processing") return "status-badge warning";
+  return "status-badge";
+}
+
+function shippingBadgeClass(status) {
+  if (status === "已签收") return "status-badge success";
+  if (status === "运输中" || status === "已发货") return "status-badge warning";
+  return "status-badge";
+}
+
+function OrderInfoCard({ order }) {
+  if (!order) return null;
+  return h(
+    "article",
+    { className: "order-card" },
+    h(
+      "div",
+      { className: "order-card-head" },
+      h("strong", null, `订单 ${order.order_no || "-"}`),
+      h("span", { className: "status-badge" }, order.order_status || "-")
+    ),
+    h("div", { className: "order-grid" },
+      h("span", null, "商品"), h("strong", null, order.product_name || "-"),
+      h("span", null, "物流"), h("strong", null, order.shipping_status || "-"),
+      h("span", null, "快递"), h("strong", null, order.express_company || "-"),
+      h("span", null, "单号"), h("strong", null, order.tracking_no || "-"),
+      h("span", null, "售后"), h("strong", null, order.aftersale_status || "-")
+    )
+  );
+}
+
+function AftersaleTicketInfoCard({ ticket }) {
+  if (!ticket) return null;
+  return h(
+    "article",
+    { className: "ticket-card" },
+    h(
+      "div",
+      { className: "order-card-head" },
+      h("strong", null, ticket.ticket_no || "售后工单"),
+      h("span", { className: ticketStatusClass(ticket.status) }, statusLabel(ticket.status))
+    ),
+    h("div", { className: "order-grid" },
+      h("span", null, "问题类型"), h("strong", null, ticket.issue_type || "-"),
+      h("span", null, "订单号"), h("strong", null, ticket.order_no || "-"),
+      h("span", null, "人工处理"), h("strong", null, ticket.needs_human ? "需要" : "否")
+    )
+  );
 }
 
 function ChatPage({ customerMode }) {
@@ -749,6 +1050,8 @@ function ChatConsole({ customerMode }) {
                   message.needs_human && h("div", { className: customerMode ? "handoff-banner customer" : "handoff-banner" }, "已转人工处理"),
                   h("p", null, message.answer),
                   h(ProductCardList, { cards: message.product_cards || [], customerMode }),
+                  h(OrderInfoCard, { order: message.order_card }),
+                  h(AftersaleTicketInfoCard, { ticket: message.aftersale_ticket }),
                   !customerMode && h(SourceList, { sources: message.sources || [] })
                 )
           ),
@@ -768,7 +1071,7 @@ function ChatConsole({ customerMode }) {
       h(
         "div",
         { className: "customer-quick-bar" },
-        ["多久发货？", "可以退货吗？", "有 200 元以内的包推荐吗？", "我要找人工客服"].map((question) =>
+        ["订单 10001 发货了吗？", "可以退货吗？", "有 200 元以内的包推荐吗？", "我要找人工客服"].map((question) =>
           h("button", { key: question, type: "button", onClick: () => ask(question) }, question)
         )
       ),

@@ -9,23 +9,30 @@ from fastapi.staticfiles import StaticFiles
 from .chat_service import answer_question
 from .config import PROJECT_ROOT, get_settings
 from .database import (
+    create_aftersale_ticket,
+    get_aftersale_ticket,
+    get_order,
     init_db,
     get_product,
     insert_knowledge_file,
     insert_products,
+    list_aftersale_tickets,
     list_chat_history,
     list_chat_records,
     list_chat_sessions,
     list_knowledge_files,
     list_missed_questions,
+    list_orders,
     list_products,
     resolve_missed_question,
     save_upload,
+    search_orders,
     search_products,
+    update_aftersale_status,
 )
 from .file_parser import chunk_text, parse_product_file, parse_text_file, product_to_document
 from .rag import build_knowledge_documents, build_product_documents, get_collection, upsert_documents
-from .schemas import ChatRequest, LoginRequest
+from .schemas import AftersaleCreateRequest, AftersaleStatusUpdate, ChatRequest, LoginRequest
 
 
 app = FastAPI(title="RAG 电商商家 AI 客服导购系统", version="0.1.0")
@@ -122,6 +129,52 @@ def product_detail(product_id: int):
     item = get_product(product_id)
     if not item:
         raise HTTPException(status_code=404, detail="未找到该商品")
+    return item
+
+
+@app.get("/api/orders")
+def orders():
+    return {"items": list_orders()}
+
+
+@app.get("/api/orders/search")
+def order_search(keyword: str = ""):
+    return {"items": search_orders(keyword)}
+
+
+@app.get("/api/orders/{order_no}")
+def order_detail(order_no: str):
+    item = get_order(order_no)
+    if not item:
+        raise HTTPException(status_code=404, detail="未找到该订单")
+    return item
+
+
+@app.get("/api/aftersales")
+def aftersales(status: str = ""):
+    if status and status not in {"pending", "processing", "resolved", "rejected"}:
+        raise HTTPException(status_code=400, detail="status 仅支持 pending、processing、resolved、rejected")
+    return {"items": list_aftersale_tickets(status)}
+
+
+@app.get("/api/aftersales/{ticket_id}")
+def aftersale_detail(ticket_id: int):
+    item = get_aftersale_ticket(ticket_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="未找到该售后工单")
+    return item
+
+
+@app.post("/api/aftersales")
+def create_aftersale(payload: AftersaleCreateRequest):
+    return create_aftersale_ticket(payload.model_dump())
+
+
+@app.patch("/api/aftersales/{ticket_id}/status")
+def patch_aftersale_status(ticket_id: int, payload: AftersaleStatusUpdate):
+    item = update_aftersale_status(ticket_id, payload.status)
+    if not item:
+        raise HTTPException(status_code=404, detail="未找到该售后工单")
     return item
 
 

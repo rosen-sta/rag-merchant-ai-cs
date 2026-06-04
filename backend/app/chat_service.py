@@ -7,7 +7,21 @@ from uuid import uuid4
 from openai import OpenAI
 
 from .config import get_settings
-from .database import insert_chat_record, insert_missed_question, list_products
+from .database import create_aftersale_ticket, get_order, insert_chat_record, insert_missed_question, list_products
+from .order_service import (
+    ORDER_NOT_FOUND_MESSAGE,
+    aftersale_ticket_to_card,
+    build_aftersale_answer,
+    build_ai_suggestion,
+    build_order_answer,
+    extract_order_no,
+    infer_issue_type,
+    is_aftersale_request,
+    is_order_query,
+    order_context,
+    order_to_card,
+    ticket_context,
+)
 from .product_guide import (
     format_product_list,
     match_products_for_comparison,
@@ -111,12 +125,18 @@ def _append_handoff(answer: str, needs_human: bool) -> str:
         return answer
     if PRODUCT_NO_MATCH_MESSAGE in answer:
         return answer
+    if ORDER_NOT_FOUND_MESSAGE in answer:
+        return answer
+    if "已经帮您记录" in answer and "人工客服" in answer:
+        return answer
     if not answer:
         return HUMAN_HANDOFF_MESSAGE
     return f"{answer}\n{HUMAN_HANDOFF_MESSAGE}"
 
 
 def _miss_reason(sources: List[Dict], answer: str) -> str:
+    if ORDER_NOT_FOUND_MESSAGE in answer:
+        return "order_not_found"
     if NO_INFO_MESSAGE in answer:
         return "answer_no_info"
     if PRODUCT_NO_MATCH_MESSAGE in answer:
@@ -163,12 +183,19 @@ def _persist_chat(result: Dict) -> Dict:
             "mode": result["mode"],
             "is_fallback": result["is_fallback"],
             "needs_human": result["needs_human"],
+            "order_card_json": json.dumps(result.get("order_card"), ensure_ascii=False) if result.get("order_card") else "",
+            "aftersale_ticket_json": json.dumps(result.get("aftersale_ticket"), ensure_ascii=False)
+            if result.get("aftersale_ticket")
+            else "",
         }
     )
     result["record_id"] = record["id"]
     result["created_at"] = record["created_at"]
 
-    reason = "" if result["mode"] == "human_handoff" else _miss_reason(result["sources"], result["answer"])
+    if result["mode"] == "human_handoff" or result.get("order_card") or result.get("aftersale_ticket"):
+        reason = ""
+    else:
+        reason = _miss_reason(result["sources"], result["answer"])
     if reason:
         insert_missed_question(result["question"], result["session_id"], reason)
     return result
@@ -184,6 +211,8 @@ def _build_result(
     mode: str,
     needs_human: bool,
     product_cards: Optional[List[Dict]] = None,
+    order_card: Optional[Dict] = None,
+    aftersale_ticket: Optional[Dict] = None,
 ) -> Dict:
     final_answer = _append_handoff(answer, needs_human)
     return {
@@ -193,10 +222,115 @@ def _build_result(
         "answer": final_answer,
         "sources": sources,
         "product_cards": product_cards or [],
+        "order_card": order_card,
+        "aftersale_ticket": aftersale_ticket,
         "mode": mode,
         "is_fallback": _is_fallback(mode),
         "needs_human": needs_human,
     }
+
+
+def _answer_with_order(question: str, order: Dict) -> Dict:
+    settings = get_settings()
+    fallback = build_order_answer(order, question)
+    if not settings.has_deepseek_chat:
+        return {"answer": fallback, "mode": "local_fallback_no_deepseek_key"}
+
+    system_prompt = (
+        "你是网店里的真实客服。只能根据给出的模拟订单信息回答，不能编造订单状态、物流、快递单号或时间。"
+        "回答要自然、简洁、礼貌，控制在 2 到 4 句。"
+    )
+    user_prompt = f"顾客问题：{question}\n\n订单信息：\n{order_context(order)}\n\n请直接给顾客回复。"
+    try:
+        answer = _chat_with_deepseek(system_prompt, user_prompt)
+        return {"answer": answer or fallback, "mode": "deepseek_openai_compatible"}
+    except Exception as exc:
+        logger.warning("DeepSeek 订单查询调用失败：%s: %s", type(exc).__name__, str(exc)[:240])
+        return {"answer": fallback, "mode": "local_fallback_after_deepseek_error"}
+
+
+def _answer_with_aftersale(question: str, ticket: Dict) -> Dict:
+    settings = get_settings()
+    fallback = build_aftersale_answer(ticket)
+    if not settings.has_deepseek_chat:
+        return {"answer": fallback, "mode": "local_fallback_no_deepseek_key"}
+
+    system_prompt = (
+        "你是网店里的真实售后客服。售后、退款、投诉类问题必须提示已记录并建议人工客服继续核实。"
+        "只能根据给出的工单信息回答，不要编造处理结果或承诺赔付。回答控制在 2 到 4 句。"
+    )
+    user_prompt = f"顾客问题：{question}\n\n售后工单：\n{ticket_context(ticket)}\n\n请直接给顾客回复。"
+    try:
+        answer = _chat_with_deepseek(system_prompt, user_prompt)
+        return {"answer": answer or fallback, "mode": "deepseek_openai_compatible"}
+    except Exception as exc:
+        logger.warning("DeepSeek 售后工单调用失败：%s: %s", type(exc).__name__, str(exc)[:240])
+        return {"answer": fallback, "mode": "local_fallback_after_deepseek_error"}
+
+
+def _try_order_query(*, session_id: str, user_type: str, question: str) -> Optional[Dict]:
+    if not is_order_query(question):
+        return None
+    order_no = extract_order_no(question)
+    order = get_order(order_no) if order_no else None
+    if not order:
+        return _build_result(
+            session_id=session_id,
+            user_type=user_type,
+            question=question,
+            answer=ORDER_NOT_FOUND_MESSAGE,
+            sources=[],
+            product_cards=[],
+            order_card=None,
+            aftersale_ticket=None,
+            mode="no_context",
+            needs_human=True,
+        )
+    answer_data = _answer_with_order(question, order)
+    return _build_result(
+        session_id=session_id,
+        user_type=user_type,
+        question=question,
+        answer=answer_data["answer"],
+        sources=[],
+        product_cards=[],
+        order_card=order_to_card(order),
+        aftersale_ticket=None,
+        mode=answer_data["mode"],
+        needs_human=False,
+    )
+
+
+def _try_aftersale(*, session_id: str, user_type: str, question: str) -> Optional[Dict]:
+    if not is_aftersale_request(question):
+        return None
+    order_no = extract_order_no(question)
+    order = get_order(order_no) if order_no else None
+    issue_type = infer_issue_type(question)
+    ticket = create_aftersale_ticket(
+        {
+            "order_no": order_no if order else order_no,
+            "customer_name": order.get("customer_name", "") if order else "",
+            "issue_type": issue_type,
+            "issue_description": question,
+            "ai_suggestion": build_ai_suggestion(issue_type, order),
+            "status": "pending",
+            "needs_human": True,
+        }
+    )
+    answer_data = _answer_with_aftersale(question, ticket)
+    return _build_result(
+        session_id=session_id,
+        user_type=user_type,
+        question=question,
+        answer=answer_data["answer"],
+        sources=[],
+        product_cards=[],
+        order_card=order_to_card(order) if order else None,
+        aftersale_ticket=aftersale_ticket_to_card(ticket),
+        mode=answer_data["mode"],
+        needs_human=True,
+    )
 
 
 def _answer_with_products(question: str, products: List[Dict], conditions: Dict) -> Dict:
@@ -312,6 +446,22 @@ def answer_question(question: str, top_k: int = 5, session_id: str = "", user_ty
     normalized_question = question.strip()
     normalized_session_id = session_id.strip() if session_id else f"session-{uuid4().hex[:16]}"
     normalized_user_type = user_type if user_type in {"customer", "merchant_test"} else "customer"
+
+    aftersale_result = _try_aftersale(
+        session_id=normalized_session_id,
+        user_type=normalized_user_type,
+        question=normalized_question,
+    )
+    if aftersale_result:
+        return _persist_chat(aftersale_result)
+
+    order_result = _try_order_query(
+        session_id=normalized_session_id,
+        user_type=normalized_user_type,
+        question=normalized_question,
+    )
+    if order_result:
+        return _persist_chat(order_result)
 
     if any(keyword in normalized_question for keyword in HUMAN_KEYWORDS):
         return _persist_chat(

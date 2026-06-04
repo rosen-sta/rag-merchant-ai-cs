@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
+from uuid import uuid4
 
 from .config import get_settings
 
@@ -20,9 +21,88 @@ PRODUCT_FIELDS = [
     "product_url",
 ]
 
+DEFAULT_ORDERS = [
+    {
+        "order_no": "10001",
+        "customer_name": "小林",
+        "product_name": "轻薄防晒衬衫",
+        "product_id": 1,
+        "order_status": "已发货",
+        "shipping_status": "运输中",
+        "tracking_no": "ZT123456789",
+        "express_company": "中通快递",
+        "paid_amount": "159",
+        "created_at": "2026-06-01T10:20:00",
+        "shipped_at": "2026-06-02T14:30:00",
+        "aftersale_status": "无售后",
+    },
+    {
+        "order_no": "10002",
+        "customer_name": "小陈",
+        "product_name": "通勤托特包",
+        "product_id": 2,
+        "order_status": "已付款",
+        "shipping_status": "待发货",
+        "tracking_no": "",
+        "express_company": "",
+        "paid_amount": "189",
+        "created_at": "2026-06-03T18:05:00",
+        "shipped_at": "",
+        "aftersale_status": "无售后",
+    },
+    {
+        "order_no": "10003",
+        "customer_name": "阿敏",
+        "product_name": "轻薄防晒衬衫",
+        "product_id": 1,
+        "order_status": "已完成",
+        "shipping_status": "已签收",
+        "tracking_no": "SF987654321",
+        "express_company": "顺丰速运",
+        "paid_amount": "159",
+        "created_at": "2026-05-28T09:16:00",
+        "shipped_at": "2026-05-29T11:35:00",
+        "aftersale_status": "无售后",
+    },
+    {
+        "order_no": "10004",
+        "customer_name": "小周",
+        "product_name": "通勤托特包",
+        "product_id": 2,
+        "order_status": "已完成",
+        "shipping_status": "已签收",
+        "tracking_no": "YD456789123",
+        "express_company": "韵达快递",
+        "paid_amount": "189",
+        "created_at": "2026-05-25T15:48:00",
+        "shipped_at": "2026-05-26T10:10:00",
+        "aftersale_status": "申请中",
+    },
+    {
+        "order_no": "10005",
+        "customer_name": "橙子",
+        "product_name": "其他商品",
+        "product_id": None,
+        "order_status": "已取消",
+        "shipping_status": "未发货",
+        "tracking_no": "",
+        "express_company": "",
+        "paid_amount": "0",
+        "created_at": "2026-05-20T12:00:00",
+        "shipped_at": "",
+        "aftersale_status": "无售后",
+    },
+]
+
 
 def _row_to_dict(row: sqlite3.Row) -> Dict:
     return {key: row[key] for key in row.keys()}
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 @contextmanager
@@ -80,10 +160,14 @@ def init_db() -> None:
                 mode TEXT NOT NULL,
                 is_fallback INTEGER NOT NULL DEFAULT 0,
                 needs_human INTEGER NOT NULL DEFAULT 0,
+                order_card_json TEXT NOT NULL DEFAULT '',
+                aftersale_ticket_json TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
             )
             """
         )
+        _ensure_column(conn, "chat_records", "order_card_json", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "chat_records", "aftersale_ticket_json", "TEXT NOT NULL DEFAULT ''")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_records_session ON chat_records(session_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_chat_records_created ON chat_records(created_at)")
         conn.execute(
@@ -99,6 +183,74 @@ def init_db() -> None:
             """
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_missed_questions_status ON missed_questions(status)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_no TEXT NOT NULL UNIQUE,
+                customer_name TEXT DEFAULT '',
+                product_name TEXT NOT NULL,
+                product_id INTEGER,
+                order_status TEXT DEFAULT '',
+                shipping_status TEXT DEFAULT '',
+                tracking_no TEXT DEFAULT '',
+                express_company TEXT DEFAULT '',
+                paid_amount TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                shipped_at TEXT DEFAULT '',
+                aftersale_status TEXT DEFAULT '无售后'
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_orders_order_no ON orders(order_no)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS aftersale_tickets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_no TEXT NOT NULL UNIQUE,
+                order_no TEXT DEFAULT '',
+                customer_name TEXT DEFAULT '',
+                issue_type TEXT NOT NULL,
+                issue_description TEXT NOT NULL,
+                ai_suggestion TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending',
+                needs_human INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_aftersale_tickets_status ON aftersale_tickets(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_aftersale_tickets_order_no ON aftersale_tickets(order_no)")
+        _seed_default_orders(conn)
+
+
+def _seed_default_orders(conn: sqlite3.Connection) -> None:
+    for order in DEFAULT_ORDERS:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO orders (
+                order_no, customer_name, product_name, product_id, order_status,
+                shipping_status, tracking_no, express_company, paid_amount,
+                created_at, shipped_at, aftersale_status
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                order["order_no"],
+                order["customer_name"],
+                order["product_name"],
+                order["product_id"],
+                order["order_status"],
+                order["shipping_status"],
+                order["tracking_no"],
+                order["express_company"],
+                order["paid_amount"],
+                order["created_at"],
+                order["shipped_at"],
+                order["aftersale_status"],
+            ),
+        )
 
 
 def insert_products(products: Iterable[Dict], source_file: str) -> List[Dict]:
@@ -193,6 +345,184 @@ def search_products(
     return matched
 
 
+def list_orders() -> List[Dict]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, order_no, customer_name, product_name, product_id,
+                   order_status, shipping_status, tracking_no, express_company,
+                   paid_amount, created_at, shipped_at, aftersale_status
+            FROM orders
+            ORDER BY id DESC
+            """
+        ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def get_order(order_no: str) -> Optional[Dict]:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT id, order_no, customer_name, product_name, product_id,
+                   order_status, shipping_status, tracking_no, express_company,
+                   paid_amount, created_at, shipped_at, aftersale_status
+            FROM orders
+            WHERE order_no = ?
+            """,
+            (order_no.strip(),),
+        ).fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def search_orders(keyword: str = "") -> List[Dict]:
+    keyword = keyword.strip()
+    if not keyword:
+        return list_orders()
+    with get_connection() as conn:
+        like_value = f"%{keyword}%"
+        rows = conn.execute(
+            """
+            SELECT id, order_no, customer_name, product_name, product_id,
+                   order_status, shipping_status, tracking_no, express_company,
+                   paid_amount, created_at, shipped_at, aftersale_status
+            FROM orders
+            WHERE order_no LIKE ?
+               OR customer_name LIKE ?
+               OR product_name LIKE ?
+               OR tracking_no LIKE ?
+               OR express_company LIKE ?
+            ORDER BY id DESC
+            """,
+            (like_value, like_value, like_value, like_value, like_value),
+        ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def _ticket_no() -> str:
+    return f"AS{datetime.utcnow().strftime('%Y%m%d%H%M%S')}{uuid4().hex[:4].upper()}"
+
+
+def create_aftersale_ticket(payload: Dict) -> Dict:
+    now = datetime.utcnow().isoformat()
+    order_no = str(payload.get("order_no", "") or "").strip()
+    customer_name = str(payload.get("customer_name", "") or "").strip()
+    if order_no and not customer_name:
+        order = get_order(order_no)
+        if order:
+            customer_name = order.get("customer_name", "")
+    with get_connection() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO aftersale_tickets (
+                ticket_no, order_no, customer_name, issue_type, issue_description,
+                ai_suggestion, status, needs_human, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _ticket_no(),
+                order_no,
+                customer_name,
+                str(payload.get("issue_type", "其他") or "其他"),
+                str(payload.get("issue_description", "") or ""),
+                str(payload.get("ai_suggestion", "") or ""),
+                str(payload.get("status", "pending") or "pending"),
+                1 if payload.get("needs_human", True) else 0,
+                now,
+                now,
+            ),
+        )
+        ticket_id = cursor.lastrowid
+        if order_no:
+            conn.execute(
+                "UPDATE orders SET aftersale_status = '申请中' WHERE order_no = ?",
+                (order_no,),
+            )
+        row = conn.execute(
+            """
+            SELECT id, ticket_no, order_no, customer_name, issue_type,
+                   issue_description, ai_suggestion, status, needs_human,
+                   created_at, updated_at
+            FROM aftersale_tickets
+            WHERE id = ?
+            """,
+            (ticket_id,),
+        ).fetchone()
+    return _coerce_aftersale_ticket(row)
+
+
+def list_aftersale_tickets(status: str = "") -> List[Dict]:
+    params: List = []
+    where = ""
+    if status:
+        where = "WHERE status = ?"
+        params.append(status)
+    with get_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT id, ticket_no, order_no, customer_name, issue_type,
+                   issue_description, ai_suggestion, status, needs_human,
+                   created_at, updated_at
+            FROM aftersale_tickets
+            {where}
+            ORDER BY id DESC
+            LIMIT 500
+            """,
+            params,
+        ).fetchall()
+    return [_coerce_aftersale_ticket(row) for row in rows]
+
+
+def get_aftersale_ticket(ticket_id: int) -> Optional[Dict]:
+    with get_connection() as conn:
+        row = conn.execute(
+            """
+            SELECT id, ticket_no, order_no, customer_name, issue_type,
+                   issue_description, ai_suggestion, status, needs_human,
+                   created_at, updated_at
+            FROM aftersale_tickets
+            WHERE id = ?
+            """,
+            (ticket_id,),
+        ).fetchone()
+    return _coerce_aftersale_ticket(row) if row else None
+
+
+def update_aftersale_status(ticket_id: int, status: str) -> Optional[Dict]:
+    now = datetime.utcnow().isoformat()
+    with get_connection() as conn:
+        conn.execute(
+            """
+            UPDATE aftersale_tickets
+            SET status = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (status, now, ticket_id),
+        )
+        row = conn.execute(
+            """
+            SELECT id, ticket_no, order_no, customer_name, issue_type,
+                   issue_description, ai_suggestion, status, needs_human,
+                   created_at, updated_at
+            FROM aftersale_tickets
+            WHERE id = ?
+            """,
+            (ticket_id,),
+        ).fetchone()
+        if row and status in {"resolved", "rejected"} and row["order_no"]:
+            conn.execute(
+                "UPDATE orders SET aftersale_status = ? WHERE order_no = ?",
+                ("已处理" if status == "resolved" else "无售后", row["order_no"]),
+            )
+    return _coerce_aftersale_ticket(row) if row else None
+
+
+def _coerce_aftersale_ticket(row: sqlite3.Row) -> Dict:
+    item = _row_to_dict(row)
+    item["needs_human"] = bool(item["needs_human"])
+    return item
+
+
 def insert_knowledge_file(filename: str, content: str, chunk_count: int) -> Dict:
     now = datetime.utcnow().isoformat()
     with get_connection() as conn:
@@ -232,9 +562,10 @@ def insert_chat_record(record: Dict) -> Dict:
             """
             INSERT INTO chat_records (
                 session_id, user_type, question, answer, sources_json,
-                mode, is_fallback, needs_human, created_at
+                mode, is_fallback, needs_human, order_card_json,
+                aftersale_ticket_json, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record["session_id"],
@@ -245,6 +576,8 @@ def insert_chat_record(record: Dict) -> Dict:
                 record["mode"],
                 1 if record.get("is_fallback") else 0,
                 1 if record.get("needs_human") else 0,
+                record.get("order_card_json", ""),
+                record.get("aftersale_ticket_json", ""),
                 now,
             ),
         )
@@ -268,7 +601,8 @@ def list_chat_records(filter_name: str = "all") -> List[Dict]:
         rows = conn.execute(
             f"""
             SELECT id, session_id, user_type, question, answer, sources_json,
-                   mode, is_fallback, needs_human, created_at
+                   mode, is_fallback, needs_human, order_card_json,
+                   aftersale_ticket_json, created_at
             FROM chat_records
             {where}
             ORDER BY id DESC
@@ -284,7 +618,8 @@ def list_chat_history(session_id: str) -> List[Dict]:
         rows = conn.execute(
             """
             SELECT id, session_id, user_type, question, answer, sources_json,
-                   mode, is_fallback, needs_human, created_at
+                   mode, is_fallback, needs_human, order_card_json,
+                   aftersale_ticket_json, created_at
             FROM chat_records
             WHERE session_id = ?
             ORDER BY id ASC
